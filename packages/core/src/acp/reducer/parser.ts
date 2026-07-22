@@ -37,7 +37,13 @@ import type { SessionConfigState, SessionUsage } from '../models/config';
 import type { PlanState } from '../models/plan';
 import type { TranscriptTurn, TranscriptTurnOutcome } from '../models/turns';
 import type { EnrichHook, NormalizedEvent } from './normalized-event';
-import { initialState, reduce, type ParserState, type ReducerDeps } from './reducer';
+import {
+  initialState,
+  reduce,
+  type ParserState,
+  type ReducerDeps,
+  type ReducerInput,
+} from './reducer';
 
 export interface AcpTranscriptParserDeps {
   conversationId: string;
@@ -59,10 +65,26 @@ export type ReplayEntry = SessionUpdate | { update: SessionUpdate; ts?: number; 
 export class AcpTranscriptParser {
   private state: ParserState;
   private readonly deps: ReducerDeps;
+  private _revision = 0;
 
   constructor(deps: AcpTranscriptParserDeps) {
     this.state = initialState();
     this.deps = { ...deps };
+  }
+
+  /**
+   * Monotonic counter bumped whenever a push actually changed parser state.
+   * Callers compare revisions around a push to tell no-op events (e.g. stray
+   * status-only tool updates) from real transcript activity.
+   */
+  get revision(): number {
+    return this._revision;
+  }
+
+  private apply(input: ReducerInput): void {
+    const next = reduce(this.state, input, this.deps);
+    if (next !== this.state) this._revision += 1;
+    this.state = next;
   }
 
   /**
@@ -71,11 +93,11 @@ export class AcpTranscriptParser {
    * For transcript-affecting variants, may open or close a turn.
    */
   push(update: SessionUpdate, at = Date.now()): void {
-    this.state = reduce(this.state, { kind: 'update', update, at }, this.deps);
+    this.apply({ kind: 'update', update, at });
   }
 
   pushEvent(event: NormalizedEvent, at = Date.now()): void {
-    this.state = reduce(this.state, { kind: 'event', event, at }, this.deps);
+    this.apply({ kind: 'event', event, at });
   }
 
   /**
@@ -85,19 +107,19 @@ export class AcpTranscriptParser {
    * No-op when there is no active turn.
    */
   endTurn(at = Date.now()): void {
-    this.state = reduce(this.state, { kind: 'turn_end', at }, this.deps);
+    this.apply({ kind: 'turn_end', at });
   }
 
   settleTurn(outcome: TranscriptTurnOutcome, at = Date.now()): void {
-    this.state = reduce(this.state, { kind: 'turn_end', outcome, at }, this.deps);
+    this.apply({ kind: 'turn_end', outcome, at });
   }
 
   beginReplay(at = Date.now()): void {
-    this.state = reduce(this.state, { kind: 'replay_start', at }, this.deps);
+    this.apply({ kind: 'replay_start', at });
   }
 
   endReplay(at = Date.now()): void {
-    this.state = reduce(this.state, { kind: 'replay_end', at }, this.deps);
+    this.apply({ kind: 'replay_end', at });
   }
 
   /**

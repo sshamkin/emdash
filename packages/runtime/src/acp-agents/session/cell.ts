@@ -53,6 +53,14 @@ export interface AcpChatHistory {
   active: TranscriptTurn | null;
 }
 
+/**
+ * Debounce (ms) before an idle agent-initiated turn is settled as quiesced.
+ * Must comfortably exceed routine pauses inside one streamed response
+ * (thinking gaps, token pacing) — a premature settle mid-stream fragments the
+ * turn; the reducer can only heal fragments carrying a provider messageId.
+ */
+export const IDLE_TURN_QUIESCE_MS = 2000;
+
 type ConfigDimension = 'model' | 'effort';
 
 export class SessionCell {
@@ -182,9 +190,6 @@ export class SessionCell {
   push(event: NormalizedEvent): void {
     if (event.kind === 'ignored') return;
 
-    const idleTranscriptEvent = this.isIdleAgentTranscriptEvent(event);
-    if (idleTranscriptEvent) this.applyEvent({ type: 'AgentActivity', active: true });
-
     if (this.isTranscriptEvent(event) && !this.canAcceptTranscriptEvent()) {
       this.deps.logger.warn('SessionCell: dropping transcript update outside active turn', {
         conversationId: this.conversationId,
@@ -193,11 +198,20 @@ export class SessionCell {
       return;
     }
 
+    const idleTranscriptEvent = this.isIdleAgentTranscriptEvent(event);
     const previousRunningAgentCount = this.lastRunningAgentCount;
+    const revisionBefore = this.transcript.revision;
     this.transcript.pushEvent(event);
+    // A push the reducer discarded (e.g. a status-only tool_update addressed
+    // to no known tool call) must not wake the agent-activity machinery or
+    // arm a quiesce — it would settle an empty turn two seconds later.
+    const changed = this.transcript.revision !== revisionBefore;
     this.dispatchAgentsChangedIfNeeded(previousRunningAgentCount);
-    if (idleTranscriptEvent) this.scheduleQuiesce();
-    this.emitTranscriptChanged();
+    if (idleTranscriptEvent && changed) {
+      this.applyEvent({ type: 'AgentActivity', active: true });
+      this.scheduleQuiesce();
+    }
+    if (changed) this.emitTranscriptChanged();
   }
 
   async prompt(input: PromptInput): Promise<Result<SessionPromptResult, AcpSendPromptError>> {
@@ -625,7 +639,7 @@ export class SessionCell {
       this.transcript.settleTurn({ kind: 'done', reason: 'quiesced' });
       this.emitTranscriptChanged();
       this.applyEvent({ type: 'AgentActivity', active: false });
-    }, 250);
+    }, IDLE_TURN_QUIESCE_MS);
   }
 
   private clearQuiesce(): void {

@@ -8,6 +8,7 @@
 import type { SessionUpdate } from '@agentclientprotocol/sdk';
 import { describe, expect, it } from 'vitest';
 import { SESSION_PLAN_ID } from '../models/plan';
+import type { TranscriptMessage } from '../models/turns';
 import {
   makeDiffId,
   makeMessageId,
@@ -814,6 +815,170 @@ describe('AcpTranscriptParser', () => {
     p.reset();
     expect(p.history).toHaveLength(0);
     expect(p.activeTurn).toBeNull();
+  });
+});
+
+describe('AcpTranscriptParser – quiesce reopen', () => {
+  const QUIESCED = { kind: 'done', reason: 'quiesced' } as const;
+
+  it('reopens a quiesce-settled turn when the same assistant message continues', () => {
+    const p = new AcpTranscriptParser(deps());
+    p.push(assistantChunk('m1', "That's just the round-1 shell process winding do"));
+    p.settleTurn(QUIESCED);
+    expect(p.history).toHaveLength(1);
+
+    p.push(assistantChunk('m1', 'wn — its review was already consumed.'));
+    expect(p.history).toHaveLength(0);
+    p.endTurn();
+
+    expect(p.history).toHaveLength(1);
+    const messages = p.history[0].items.filter((i): i is TranscriptMessage => i.kind === 'message');
+    expect(messages).toHaveLength(1);
+    expect(messages[0].text).toBe(
+      "That's just the round-1 shell process winding down — its review was already consumed."
+    );
+  });
+
+  it('reopens across a thinking → text boundary sharing one provider messageId', () => {
+    const p = new AcpTranscriptParser(deps());
+    p.push(thoughtChunk('m1', 'pondering'));
+    p.settleTurn(QUIESCED);
+
+    p.push(assistantChunk('m1', 'Answer.'));
+    p.endTurn();
+
+    expect(p.history).toHaveLength(1);
+    const kinds = p.history[0].items.map((i) => i.kind);
+    expect(kinds).toEqual(['thinking', 'message']);
+  });
+
+  it('reopens for a tool_update addressed to a tool call in the settled turn', () => {
+    const p = new AcpTranscriptParser(deps());
+    p.push(toolCallUpdate('exec-1', 'Terminal', 'execute'));
+    p.settleTurn(QUIESCED);
+
+    p.push({
+      sessionUpdate: 'tool_call_update',
+      sessionId: 'sess-1',
+      toolCallId: 'exec-1',
+      title: 'pnpm test',
+      kind: 'execute',
+      status: 'completed',
+      content: [],
+    } as unknown as SessionUpdate);
+    p.endTurn();
+
+    expect(p.history).toHaveLength(1);
+    const executes = p.history[0].items.filter((i) => i.kind === 'execute-tool-call');
+    expect(executes).toHaveLength(1);
+    expect(executes[0]).toMatchObject({ command: 'pnpm test', status: 'done' });
+  });
+
+  it('does not reopen for an unrelated assistant message', () => {
+    const p = new AcpTranscriptParser(deps());
+    p.push(assistantChunk('m1', 'First response.'));
+    p.settleTurn(QUIESCED);
+
+    p.push(assistantChunk('m2', 'Second response.'));
+    p.endTurn();
+
+    expect(p.history).toHaveLength(2);
+  });
+
+  it('does not reopen turns settled without the quiesced reason', () => {
+    const p = new AcpTranscriptParser(deps());
+    p.push(assistantChunk('m1', 'First.'));
+    p.endTurn();
+
+    p.push(assistantChunk('m1', 'Again.'));
+    p.endTurn();
+
+    expect(p.history).toHaveLength(2);
+  });
+
+  it('restores synthesized segment counters when reopening', () => {
+    const p = new AcpTranscriptParser(deps());
+    p.push(assistantChunk('m1', 'Provider-id message.'));
+    p.pushEvent({ kind: 'message', role: 'assistant', messageId: null, text: 'first id-less' });
+    p.settleTurn(QUIESCED);
+
+    p.push(assistantChunk('m1', ' Continued.'));
+    p.pushEvent({ kind: 'message', role: 'assistant', messageId: null, text: 'second id-less' });
+    p.endTurn();
+
+    expect(p.history).toHaveLength(1);
+    const messages = p.history[0].items.filter((i): i is TranscriptMessage => i.kind === 'message');
+    expect(messages.map((m) => m.text)).toEqual([
+      'Provider-id message. Continued.',
+      'first id-less',
+      'second id-less',
+    ]);
+    expect(messages[2].id.endsWith(':message:auto:assistant:1')).toBe(true);
+  });
+
+  it('drops status-only tool_updates for tool calls no turn has seen', () => {
+    const p = new AcpTranscriptParser(deps());
+    p.push(userChunk('u1', 'go'));
+    p.push(toolUpdateDone('ghost-tool'));
+
+    expect(p.activeTurn?.items.some((i) => i.kind === 'unknown-tool-call')).toBe(false);
+  });
+
+  it('a status-only orphan tool_update in an idle session does not open a turn', () => {
+    const p = new AcpTranscriptParser(deps());
+    const revisionBefore = p.revision;
+    p.push(toolUpdateDone('ghost-tool'));
+
+    expect(p.activeTurn).toBeNull();
+    expect(p.history).toHaveLength(0);
+    expect(p.revision).toBe(revisionBefore);
+  });
+
+  it('dropping a status-only orphan update leaves an open thinking row untouched', () => {
+    const p = new AcpTranscriptParser(deps());
+    p.push(userChunk('u1', 'go'));
+    p.push(thoughtChunk('t1', 'pondering'));
+    p.push(toolUpdateDone('ghost-tool'));
+
+    expect(p.activeTurn?.items.find((i) => i.kind === 'thinking')).toMatchObject({
+      status: 'thinking',
+    });
+  });
+
+  it('a status-only update addressed to a quiesce-settled turn still reopens it', () => {
+    const p = new AcpTranscriptParser(deps());
+    p.push(toolCallUpdate('exec-1', 'pnpm test', 'execute'));
+    p.settleTurn(QUIESCED);
+
+    p.push(toolUpdateDone('exec-1'));
+
+    expect(p.activeTurn).not.toBeNull();
+    expect(p.history).toHaveLength(0);
+  });
+
+  it('a status-only orphan update does not split an id-less assistant stream', () => {
+    const p = new AcpTranscriptParser(deps());
+    p.push(userChunk('u1', 'go'));
+    p.pushEvent({ kind: 'message', role: 'assistant', messageId: null, text: 'Hello' });
+    p.push(toolUpdateDone('ghost-tool'));
+    p.pushEvent({ kind: 'message', role: 'assistant', messageId: null, text: ' world' });
+
+    const messages = p.activeTurn?.items.filter(
+      (i): i is TranscriptMessage => i.kind === 'message' && i.role === 'assistant'
+    );
+    expect(messages).toHaveLength(1);
+    expect(messages?.[0].text).toBe('Hello world');
+  });
+
+  it('a status-only orphan update keeps an id-less thinking row open', () => {
+    const p = new AcpTranscriptParser(deps());
+    p.push(userChunk('u1', 'go'));
+    p.pushEvent({ kind: 'thinking', messageId: null, text: 'hmm' });
+    p.push(toolUpdateDone('ghost-tool'));
+
+    expect(p.activeTurn?.items.find((i) => i.kind === 'thinking')).toMatchObject({
+      status: 'thinking',
+    });
   });
 });
 

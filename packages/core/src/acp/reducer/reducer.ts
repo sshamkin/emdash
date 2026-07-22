@@ -136,6 +136,100 @@ export function closeActive(
   return { committed: [...t.committed, committed], active: null };
 }
 
+function flattenTurnItems(items: TranscriptItem[]): Array<TranscriptItem | ToolNode> {
+  const flat: Array<TranscriptItem | ToolNode> = [];
+  const visit = (item: TranscriptItem | ToolNode): void => {
+    flat.push(item);
+    if ('children' in item && item.children?.length) {
+      for (const child of item.children) visit(child);
+    }
+  };
+  for (const item of items) visit(item);
+  return flat;
+}
+
+/**
+ * Returns true when a late agent event provably belongs to an already-settled
+ * turn: an assistant message/thinking chunk whose provider messageId produced
+ * an item there, or a tool_update addressed to a tool call that lives there.
+ */
+function turnHasToolCall(turn: TranscriptTurn, toolCallId: string): boolean {
+  return flattenTurnItems(turn.items).some(
+    (item) => 'toolCallId' in item && item.toolCallId === toolCallId
+  );
+}
+
+function continuesTurn(turn: TranscriptTurn, event: NormalizedEvent): boolean {
+  if (event.kind === 'message' || event.kind === 'thinking') {
+    if (event.kind === 'message' && event.role !== 'assistant') return false;
+    if (event.messageId === null) return false;
+    const messageItemId = makeMessageId(turn.id, event.messageId, 'assistant');
+    return flattenTurnItems(turn.items).some(
+      (item) =>
+        item.id === messageItemId ||
+        (item.kind === 'thinking' &&
+          (item.segmentId === event.messageId ||
+            item.segmentId.startsWith(`${event.messageId}:segment:`)))
+    );
+  }
+  if (event.kind === 'tool_update') {
+    return turnHasToolCall(turn, event.toolCallId);
+  }
+  return false;
+}
+
+/**
+ * Rebuild synthesized-segment counters from a reopened turn's items so id-less
+ * chunks arriving after the reopen cannot collide with existing auto ids.
+ */
+function segmentStateForTurn(turn: TranscriptTurn): SegmentState {
+  const segment = initialSegment();
+  for (const item of flattenTurnItems(turn.items)) {
+    const match = /:(?:message|thinking):auto:(user|assistant|thinking):(\d+)$/.exec(item.id);
+    if (!match) continue;
+    const stream = match[1] as 'user' | 'assistant' | 'thinking';
+    segment[stream] = Math.max(segment[stream], Number(match[2]) + 1);
+  }
+  return segment;
+}
+
+/**
+ * A tool_update that carries nothing renderable — no title, output, terminal,
+ * or diffs. When it addresses a tool call no turn knows, it is pure noise
+ * (typically a late status notification for a settled turn) and must not open
+ * a turn or disturb existing items.
+ */
+function isStatusOnlyToolUpdate(event: NormalizedEvent): boolean {
+  return (
+    event.kind === 'tool_update' &&
+    event.title === null &&
+    event.outputText === undefined &&
+    event.terminalId === undefined &&
+    event.diffs.length === 0
+  );
+}
+
+/**
+ * Reopen the last committed turn when it was settled by runtime quiescence and
+ * the incoming event continues it. Quiesce is a heuristic timeout — a slow
+ * stream can pause long enough to settle the turn mid-message, and without
+ * reopening, the next chunk would land in a fresh turn under new item ids,
+ * fragmenting one streamed message into many.
+ */
+function reopenQuiescedTurn(
+  t: TranscriptSlice,
+  event: NormalizedEvent
+): { transcript: TranscriptSlice; segment: SegmentState } | null {
+  const last = t.committed.at(-1);
+  if (last?.outcome?.kind !== 'done' || last.outcome.reason !== 'quiesced') return null;
+  if (!continuesTurn(last, event)) return null;
+  const { outcome: _outcome, ...reopened } = last;
+  return {
+    transcript: { committed: t.committed.slice(0, -1), active: reopened },
+    segment: segmentStateForTurn(reopened),
+  };
+}
+
 /**
  * Returns true when the incoming user message represents a NEW turn open.
  * Uses the CURRENT active turn's id — not a tentative next-turn id — so the
@@ -518,6 +612,21 @@ export function reduce(s: ParserState, input: ReducerInput, deps: ReducerDeps): 
   const plan = updatePlanSlice(s.plan, event, input.at);
   let agents = s.agents;
 
+  // Status-only stray tool_updates addressed to no tool call in the active
+  // turn are dropped BEFORE materializeEvent — which would otherwise close
+  // the open synthesized segment (splitting id-less message/thinking streams)
+  // — and before any state change that callers would read as activity.
+  // The no-active-turn case is handled in the lazy-open branch below, after
+  // the quiesce-reopen continuation check.
+  if (
+    event.kind === 'tool_update' &&
+    isStatusOnlyToolUpdate(event) &&
+    t.active &&
+    !turnHasToolCall(t.active, event.toolCallId)
+  ) {
+    return s;
+  }
+
   // OPEN boundary: a new user message starts a new turn.
   if (event.kind === 'message' && event.role === 'user') {
     if (isNewUserMessage(t.active, event, segment)) {
@@ -527,10 +636,21 @@ export function reduce(s: ParserState, input: ReducerInput, deps: ReducerDeps): 
     }
   }
 
-  // Lazy open: agent-initiated content with no active turn.
+  // Lazy open: agent-initiated content with no active turn. A quiesce-settled
+  // turn is reopened instead when the event provably continues it, and a
+  // status-only stray tool_update never opens a turn at all — it would only
+  // commit an empty turn later.
   if (!t.active) {
-    t = openTurn(t, deps, 'agent');
-    segment = initialSegment();
+    const reopened = reopenQuiescedTurn(t, event);
+    if (reopened) {
+      t = reopened.transcript;
+      segment = reopened.segment;
+    } else if (isStatusOnlyToolUpdate(event)) {
+      return s;
+    } else {
+      t = openTurn(t, deps, 'agent');
+      segment = initialSegment();
+    }
   }
 
   const materialized = materializeEvent(t, segment, event, input.at);

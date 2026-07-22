@@ -3,7 +3,7 @@ import { isOk } from '@emdash/shared';
 import { noopLogger } from '@emdash/shared/logger';
 import { describe, expect, it, vi } from 'vitest';
 import { FakeAcpAgent } from '../acp-test-support';
-import { SessionCell } from './cell';
+import { IDLE_TURN_QUIESCE_MS, SessionCell } from './cell';
 
 function makeCell(agent = new FakeAcpAgent()) {
   const cell = new SessionCell({
@@ -291,7 +291,7 @@ describe('SessionCell idle turns and queue commands', () => {
       expect(cell.sessionState.agentTurnActive).toBe(true);
       expect(cell.history().active?.initiator).toBe('agent');
 
-      vi.advanceTimersByTime(300);
+      vi.advanceTimersByTime(IDLE_TURN_QUIESCE_MS + 50);
       await Promise.resolve();
 
       expect(cell.sessionState.agentTurnActive).toBe(false);
@@ -300,6 +300,31 @@ describe('SessionCell idle turns and queue commands', () => {
         kind: 'done',
         reason: 'quiesced',
       });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('ignores status-only updates for unknown tool calls while idle', () => {
+    vi.useFakeTimers();
+    try {
+      const { cell } = makeCell();
+
+      cell.push({
+        kind: 'tool_update',
+        toolCallId: 'ghost-tool',
+        title: null,
+        toolKind: null,
+        status: 'completed',
+        parentToolCallId: null,
+        diffs: [],
+      });
+
+      expect(cell.sessionState.agentTurnActive).toBe(false);
+      expect(cell.history().active).toBeNull();
+
+      vi.advanceTimersByTime(IDLE_TURN_QUIESCE_MS + 50);
+      expect(cell.history().committed).toHaveLength(0);
     } finally {
       vi.useRealTimers();
     }

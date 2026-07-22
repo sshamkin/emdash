@@ -695,10 +695,9 @@ export function foldItem(
     case 'tool_update': {
       const toolId = makeToolId(turnId, event.toolCallId);
       const parentToolCallId = event.parentToolCallId ?? undefined;
-      const base = finalizeOpenThinking(flatItems, at);
       if (event.diffs.length > 0) {
         const next = upsertFileOperations(
-          base,
+          finalizeOpenThinking(flatItems, at),
           toolId,
           event.toolCallId,
           event.title ?? 'Edit file',
@@ -709,7 +708,24 @@ export function foldItem(
         return normalizeToolStructure(next, turnId);
       }
 
-      const idx = base.findIndex((it) => isToolCallItem(it) && it.id === toolId);
+      // finalizeOpenThinking preserves array length and order, so an index
+      // found on flatItems remains valid on `base` below.
+      const idx = flatItems.findIndex((it) => isToolCallItem(it) && it.id === toolId);
+      if (
+        idx < 0 &&
+        !hasFileOperationsForToolCall(flatItems, event.toolCallId) &&
+        event.title === null &&
+        event.outputText === undefined &&
+        event.terminalId === undefined
+      ) {
+        // Status-only update for a tool call this turn never saw (typically a
+        // late update addressed to an earlier turn) — nothing renderable, and
+        // dropping it must not disturb existing items (e.g. finalize an open
+        // thinking row).
+        return items;
+      }
+
+      const base = finalizeOpenThinking(flatItems, at);
       let next: TranscriptItem[];
       if (idx >= 0) {
         const tool = base[idx] as ToolCallItem;
@@ -732,7 +748,7 @@ export function foldItem(
             id: toolId,
             seq: nextSeq(base),
             toolCallId: event.toolCallId,
-            title: event.title ?? 'unknown',
+            title: event.title ?? (isExecuteKind(event.toolKind) ? '' : 'Tool'),
             toolKind: event.toolKind,
             status: event.status,
             parentToolCallId,
