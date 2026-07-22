@@ -286,7 +286,54 @@ export type TurnOutcomeItem = {
   outcome: TranscriptTurnOutcome;
 };
 
-export type SyntheticItem = WorkingItem | TurnOutcomeItem;
+/**
+ * Transcript item kinds that fold into a chip strip while not expanded.
+ * Only leaf tool calls qualify — items with nested children keep their
+ * hierarchical tool-group rendering.
+ */
+export const CHIP_TOOL_KINDS: ReadonlySet<string> = new Set([
+  'execute-tool-call',
+  'read-tool-call',
+  'search-tool-call',
+  'mcp-tool-call',
+  'web-fetch-tool-call',
+  'unknown-tool-call',
+]);
+
+/**
+ * Synthetic item minted by flatten for a run of consecutive folded tool calls.
+ * The run renders as one unit of compact chips flowing left-to-right instead
+ * of a full-width row per call.
+ */
+export type ToolChipsItem = {
+  kind: 'tool-chips';
+  id: string;
+  items: ChatItem[];
+};
+
+/** A single folded tool call inside a ChatToolChips strip. */
+export type ChatToolChip = {
+  /** Transcript item id — doubles as the collapse-toggle target when expandable. */
+  id: string;
+  label: string;
+  /** Render the label in the code font (shell commands). */
+  mono?: boolean;
+  status: ToolStatus;
+  /** True when clicking the chip expands it into its full-width card. */
+  expandable?: boolean;
+  awaitingPermission?: boolean;
+  /** Optional failure message shown in the chip's native tooltip. */
+  error?: string;
+};
+
+/** Unit data for a chip strip — a wrapping row of compact tool-call chips. */
+export type ChatToolChips = {
+  kind: 'tool-chips';
+  id: string;
+  chips: ChatToolChip[];
+};
+
+export type SyntheticItem = WorkingItem | TurnOutcomeItem | ToolChipsItem;
 
 export type ChatItem =
   | TranscriptItem

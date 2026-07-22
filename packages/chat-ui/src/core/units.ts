@@ -135,7 +135,7 @@ export type SegmentCtx = {
  *              `flatten()` collapses adjacent margins to max(prev.bottom,
  *              cur.top) and assigns the result to the lower unit's `gapBefore`.
  *              Falls back to `density.turnGap` when absent. Turn boundaries
- *              resolve to 8px via the user message's margin (top: 8, bottom: 8).
+ *              resolve to 6px via the user message's margin (top: 6, bottom: 6).
  * `estimate` — O(1) height heuristic for off-screen units at setCount/prepend.
  *              Falls back to `genericEstimate` when omitted.
  * `measure`  — exact height (px); called only for visible units.

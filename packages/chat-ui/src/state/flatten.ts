@@ -41,6 +41,7 @@
 import { resolveSeamGap } from '@core/spacing';
 import type { ItemSegmenter, Margin, RenderUnit, SegmentCtx } from '@core/units';
 import { stampGroupRoles } from '@core/units';
+import { CHIP_TOOL_KINDS } from '@/model';
 import type { ChatItem, ChatMessage, SyntheticItem, TranscriptTurn } from '@/model';
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -48,6 +49,16 @@ import type { ChatItem, ChatMessage, SyntheticItem, TranscriptTurn } from '@/mod
 /** Returns true when the item is a user-role message (boundary seam sentinel). */
 function itemIsUser(item: ChatItem): boolean {
   return item.kind === 'message' && (item as ChatMessage).role === 'user';
+}
+
+/**
+ * Returns true when the item folds into a chip strip: a leaf tool call of a
+ * chip kind that is not currently expanded to its full-width card.
+ */
+function isChipItem(item: ChatItem, ctx: SegmentCtx): boolean {
+  if (!CHIP_TOOL_KINDS.has(item.kind)) return false;
+  if ('children' in item && item.children?.length) return false;
+  return !ctx.expanded(item.id);
 }
 
 // ── ItemNode ──────────────────────────────────────────────────────────────────
@@ -111,11 +122,25 @@ export function flattenTier(
     out.push(...group);
   };
 
+  // Consecutive folded tool calls collapse into one chip-strip unit.
+  const chipRun: ChatItem[] = [];
+  const flushChips = (): void => {
+    if (chipRun.length === 0) return;
+    processItem({ kind: 'tool-chips', id: `${chipRun[0].id}:chips`, items: chipRun.slice() });
+    chipRun.length = 0;
+  };
+
   for (const turn of turns) {
     const items = turn.items as readonly ChatItem[];
     for (const item of items) {
+      if (isChipItem(item, ctx)) {
+        chipRun.push(item);
+        continue;
+      }
+      flushChips();
       processItem(item);
     }
+    flushChips();
 
     if (ctx.active && shouldShowWorking(items)) {
       processItem({ kind: 'working', id: `${turn.id}:working` });

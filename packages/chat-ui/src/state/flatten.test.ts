@@ -24,6 +24,8 @@ const STUB_SEGMENTERS: Record<string, ItemSegmenter> = {
   diff: passthrough('diff'),
   'resource-link': passthrough('resource-link'),
   plan: passthrough('plan'),
+  'execute-tool-call': passthrough('execute-tool-call' as ChatItem['kind']),
+  'tool-chips': passthrough('tool-chips' as ChatItem['kind']),
 };
 
 function userMsg(id: string, seq = 0, text = 'hello'): ChatMessage {
@@ -32,6 +34,18 @@ function userMsg(id: string, seq = 0, text = 'hello'): ChatMessage {
 
 function tool(id: string, seq = 0): ChatItem {
   return { kind: 'tool', id, seq, name: 'bash', status: 'done' } as ChatItem;
+}
+
+function executeCall(id: string, seq = 0): ChatItem {
+  return {
+    kind: 'execute-tool-call',
+    id,
+    seq,
+    toolCallId: `call-${id}`,
+    title: 'echo ok',
+    command: 'echo ok',
+    status: 'done',
+  } as unknown as ChatItem;
 }
 
 function turn(id: string, seq: number, ...items: ChatItem[]): TranscriptTurn {
@@ -195,6 +209,42 @@ describe('flatten — identity stability', () => {
     const committed = tx.state.committedTurns[0].items[0];
     expect(committed).not.toBe(streaming);
     expect(flattenCommitted(tx)[0].data).toBe(committed);
+  });
+});
+
+describe('flatten — tool chips', () => {
+  it('batches consecutive folded tool calls into one tool-chips unit', () => {
+    const tx = createTranscript();
+    tx.history.seed([
+      turn('t1', 0, userMsg('u', 0), executeCall('e1', 1), executeCall('e2', 2), tool('t', 3)),
+    ]);
+    const view = flattenAll(tx);
+    expect(view.length).toBe(3);
+    expect(view.at(1)?.kind).toBe('tool-chips');
+    expect(view.at(1)?.itemId).toBe('e1:chips');
+    expect(view.at(2)?.kind).toBe('tool');
+  });
+
+  it('an expanded tool call breaks the run and renders standalone', () => {
+    const tx = createTranscript();
+    tx.history.seed([
+      turn('t1', 0, executeCall('e1', 0), executeCall('e2', 1), executeCall('e3', 2)),
+    ]);
+    const expandedCtx = { ...segCtx, expanded: (id: string) => id === 'e2' };
+    const units = flattenTier(tx.state.committedTurns, expandedCtx, STUB_SEGMENTERS);
+    expect(units.map((u) => u.kind)).toEqual(['tool-chips', 'execute-tool-call', 'tool-chips']);
+    expect(units[0].itemId).toBe('e1:chips');
+    expect(units[1].itemId).toBe('e2');
+    expect(units[2].itemId).toBe('e3:chips');
+  });
+
+  it('chip runs do not span turns', () => {
+    const tx = createTranscript();
+    tx.history.seed([turn('t1', 0, executeCall('e1', 0)), turn('t2', 1, executeCall('e2', 0))]);
+    const view = flattenAll(tx);
+    expect(view.length).toBe(2);
+    expect(view.at(0)?.itemId).toBe('e1:chips');
+    expect(view.at(1)?.itemId).toBe('e2:chips');
   });
 });
 

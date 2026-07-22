@@ -31,6 +31,7 @@
 import {
   For,
   Show,
+  batch,
   createEffect,
   createMemo,
   createSignal,
@@ -58,8 +59,9 @@ import type { MeasureCtx } from './core/define';
 import { genericEstimate } from './core/layout/generic-estimate';
 import { STICK_THRESHOLD_PX } from './core/stick-to-bottom';
 import { unitReservedHeight } from './core/units';
+import type { RenderUnit } from './core/units';
 import { Virtualizer } from './core/virtualizer';
-import type { ChatItem, ChatMessage, TranscriptTurn } from './model';
+import type { ChatItem, ChatMessage, ChatToolChips, TranscriptTurn } from './model';
 import type { ChatState, ScrollMode } from './state/chat-state';
 import { flattenTier, makeUnitsView, collectUserTurnUnits } from './state/flatten';
 import type { UnitsView } from './state/flatten';
@@ -483,9 +485,13 @@ export function ChatRoot(props: ChatRootProps) {
   const maxScrollTop = () => Math.max(0, contentH() - viewHeight());
 
   // ── Flat unit view (two-tier, incremental) ────────────────────────────────
+  // `expanded` reads the fine-grained viewState store so segmentation reacts
+  // to collapse toggles: expanding a chip inside a tool-chips run re-runs the
+  // owning tier's flatten (per-key subscription) and breaks the run around the
+  // expanded call, which then renders as its full-width unit.
   const segmentCtx = (active = false) => ({
     caches: caches(),
-    expanded: (_id: string) => false,
+    expanded: (id: string) => viewState().isCollapsed(id),
     active,
     plan: () => state().session.state.plan,
     pendingToolCallIds: () => state().session.state.pendingToolCallIds,
@@ -504,6 +510,43 @@ export function ChatRoot(props: ChatRootProps) {
   // view.setModel swap and drives the snapshot + incremental-cache reset.
   let lastState: ChatState | undefined;
   const [committedUnitsVersion, setCommittedUnitsVersion] = createSignal(0);
+  // Bumped by toggleCollapsedById when a toggle affects chip segmentation
+  // (expanding a chip out of a strip / folding an execute card back into one).
+  const [chipStructureRev, setChipStructureRev] = createSignal(0);
+  // Set when the committed tier was rebuilt without a turns change (collapse-
+  // driven restructure, e.g. a chip expanding out of a tool-chips run). Unit
+  // structure shifted mid-list, so the virtualizer's index-keyed heights are
+  // meaningless — the units effect must reseed them from scratch.
+  let reseedHeights = false;
+
+  // Register a unit in the committed id → index map. Chip members are indexed
+  // under their own item ids too, so anchors and collapse toggles targeting a
+  // folded call resolve to its enclosing strip instead of falling through to
+  // tail-scroll mode.
+  const indexCommittedUnit = (u: RenderUnit | undefined, idx: number): void => {
+    if (!u) return;
+    if (!committedIndexById.has(u.itemId)) committedIndexById.set(u.itemId, idx);
+    if (u.kind === 'tool-chips') {
+      for (const chip of (u.data as ChatToolChips).chips) {
+        if (!committedIndexById.has(chip.id)) committedIndexById.set(chip.id, idx);
+      }
+    }
+  };
+
+  // Toggle collapse state for an item, bumping the chip revision when the
+  // toggle changes segmentation structure (chip ↔ full-width card). Batched
+  // so the committed-build effect runs once per toggle, not once per setter
+  // (each run snapshots heights and schedules a virtualizer reseed).
+  const toggleCollapsedById = (id: string): void => {
+    const committedIdx = committedIndexById.get(id);
+    const unit = committedIdx !== undefined ? committedUnitsArr[committedIdx] : undefined;
+    batch(() => {
+      if (unit && (unit.kind === 'tool-chips' || unit.kind === 'execute')) {
+        setChipStructureRev((v) => v + 1);
+      }
+      viewState().toggleCollapsed(id);
+    });
+  };
   // Stable empty array passed to makeUnitsView when we need a committed-only
   // view. Must not change identity so memos don't re-run on each access.
   const NO_ACTIVE_UNITS: ReturnType<typeof flattenTier> = [];
@@ -537,6 +580,12 @@ export function ChatRoot(props: ChatRootProps) {
     const prev = lastCommitted;
     const ctx = segmentCtx(false);
 
+    // Chip expansion changes segmentation. A cheap revision signal (bumped by
+    // toggleCollapsedById for chip-relevant ids) re-runs this effect instead
+    // of subscribing to every committed item's collapse key, which would make
+    // each incremental append O(total transcript size).
+    chipStructureRev();
+
     if (
       next.length > prev.length &&
       (prev.length === 0 || next[prev.length - 1] === prev[prev.length - 1])
@@ -550,21 +599,21 @@ export function ChatRoot(props: ChatRootProps) {
       const newUnits = flattenTier(tail, ctx, SEGMENTERS, UNIT_REGISTRY, prevKind);
       const base = committedUnitsArr.length;
       for (let j = 0; j < newUnits.length; j++) {
-        const u = newUnits[j];
-        if (u && !committedIndexById.has(u.itemId)) {
-          committedIndexById.set(u.itemId, base + j);
-        }
+        indexCommittedUnit(newUnits[j], base + j);
       }
       committedUnitsArr = [...committedUnitsArr, ...newUnits];
     } else {
       // Full rebuild (seed, prepend, or non-append structural change).
+      // Unchanged turns identity means the rebuild is collapse-driven: persist
+      // measured heights by unit id first so unchanged rows reseed exactly.
+      if (next === prev) {
+        snapshotInto(s);
+        reseedHeights = true;
+      }
       committedUnitsArr = flattenTier(next, ctx, SEGMENTERS, UNIT_REGISTRY);
       committedIndexById.clear();
       for (let i = 0; i < committedUnitsArr.length; i++) {
-        const u = committedUnitsArr[i];
-        if (u && !committedIndexById.has(u.itemId)) {
-          committedIndexById.set(u.itemId, i);
-        }
+        indexCommittedUnit(committedUnitsArr[i], i);
       }
     }
 
@@ -656,11 +705,15 @@ export function ChatRoot(props: ChatRootProps) {
     const us = units();
     const t = theme();
     untrack(() => {
+      // Delegate collapse/expand to the real viewState (not hardcoded false):
+      // on a collapse-driven reseed the toggled row is expanded, and estimating
+      // it as folded would seed a too-short height, overlapping the rows below
+      // until a measure pass corrects it. Matches the measureCtx in UnitRow.
       const estimateCtx = {
         theme: t,
         width: 0,
-        isCollapsed: () => false,
-        expanded: () => false,
+        isCollapsed: (id: string) => viewState().isCollapsed(id),
+        expanded: (id: string) => viewState().isCollapsed(id),
         caches: caches(),
         measureEpoch: measureEpoch(),
         expandedId: expandedUserId(),
@@ -669,6 +722,13 @@ export function ChatRoot(props: ChatRootProps) {
       // Skip the Map.get pass entirely on cold mounts (empty heightmap).
       const currentState = state();
       const hasHeightmapSnapshot = currentState.heightmap.lastWidth > 0;
+      if (reseedHeights) {
+        // Collapse-driven restructure: drop index continuity so every row is
+        // reseeded below (from the id-keyed snapshot taken pre-rebuild, or an
+        // estimate); visible rows re-measure precisely on the next frame.
+        reseedHeights = false;
+        virt.setCount(0, () => 0);
+      }
       virt.setCount(us.length, (i) => {
         const u = us.at(i);
         if (!u) return 60;
@@ -930,7 +990,13 @@ export function ChatRoot(props: ChatRootProps) {
     const active = untrack(activeUnits);
     const base = committedUnitsArr.length;
     for (let i = 0; i < active.length; i++) {
-      if (active[i]?.itemId === id) return base + i;
+      const u = active[i];
+      if (!u) continue;
+      if (u.itemId === id) return base + i;
+      // A folded call renders inside its chip strip — resolve to the strip.
+      if (u.kind === 'tool-chips' && (u.data as ChatToolChips).chips.some((c) => c.id === id)) {
+        return base + i;
+      }
     }
     return -1;
   }
@@ -1492,7 +1558,7 @@ export function ChatRoot(props: ChatRootProps) {
       props.controls.scrollToBottom = doScrollToBottom;
       props.controls.scrollToItem = doScrollToItem;
       props.controls.loadOlder = doLoadOlder;
-      props.controls.toggleCollapsed = (id) => viewState().toggleCollapsed(id);
+      props.controls.toggleCollapsed = (id) => toggleCollapsedById(id);
       props.controls.composerSlot = composerSlotEl ?? null;
       props.controls.heroSlot = heroSlotEl ?? null;
       props.controls.contentOverlay = contentOverlaySlotEl ?? null;
@@ -1575,7 +1641,7 @@ export function ChatRoot(props: ChatRootProps) {
           const offset = scrollEl.scrollTop - (virt.top(idx) + padTop());
           setAnchor({ kind: 'anchor', itemId: id, edge: 'top', offset });
         }
-        viewState().toggleCollapsed(id);
+        toggleCollapsedById(id);
         return;
       }
 

@@ -30,6 +30,14 @@ export const cardHeaderLeft = style({
 
 export const cardHeaderTitle = style({
   minWidth: 0,
+  whiteSpace: 'nowrap',
+  overflow: 'hidden',
+  textOverflow: 'ellipsis',
+});
+
+/** Applied when the card renders no body — the separator would double the card edge. */
+export const cardHeaderNoSeparator = style({
+  borderBottom: 'none',
 });
 
 export const cardHeaderRight = style({

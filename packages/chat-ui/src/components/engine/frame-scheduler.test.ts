@@ -192,6 +192,47 @@ describe('createFrameScheduler — sleeps when idle', () => {
   });
 });
 
+describe('createFrameScheduler — converge breaker', () => {
+  it('halts a write loop that spins without an active animation', () => {
+    const raf = makeFakeRaf();
+    withFakeRaf(raf, () => {
+      const scheduler = createFrameScheduler({
+        read: vi.fn(),
+        animate: vi.fn(() => false),
+        write: vi.fn(() => true), // pathological: always more write work
+      });
+
+      scheduler.request();
+      // MAX_CONVERGE (6) tolerated frames + the tripping frame.
+      for (let i = 0; i < 7; i++) raf.flush();
+      expect(raf.queueLength()).toBe(0); // halted — no re-arm
+    });
+  });
+
+  it('does not halt write work driven by an active animation', () => {
+    const raf = makeFakeRaf();
+    withFakeRaf(raf, () => {
+      let frames = 0;
+      const scheduler = createFrameScheduler({
+        read: vi.fn(),
+        // A 12-frame tween: every frame queues write work (height deltas).
+        animate: () => {
+          frames++;
+          return frames < 12;
+        },
+        write: () => frames < 12,
+      });
+
+      scheduler.request();
+      for (let i = 0; i < 12 && raf.queueLength() > 0; i++) raf.flush();
+
+      // The tween ran to completion — never halted by the converge breaker.
+      expect(frames).toBe(12);
+      expect(raf.queueLength()).toBe(0); // now idle, not halted mid-flight
+    });
+  });
+});
+
 describe('createFrameScheduler — dispose', () => {
   it('cancels a pending rAF and prevents the tick from running', () => {
     const raf = makeFakeRaf();

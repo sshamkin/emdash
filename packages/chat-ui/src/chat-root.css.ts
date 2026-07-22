@@ -9,8 +9,12 @@
 import { style } from '@vanilla-extract/css';
 import { vars } from './styles/theme.css';
 
-/** Max-width of the centered content column — matches user message cards. */
-const CONTAINER_WIDTH = '42rem';
+/**
+ * Max-width of the centered content column — matches user message cards.
+ * Proportional so wide panels put the side areas to work for text, with a
+ * fixed ceiling that keeps prose line lengths readable on ultrawide layouts.
+ */
+const CONTAINER_WIDTH = 'min(92%, 68rem)';
 
 /**
  * Horizontal gutter applied to the scroll container, pinned overlay, and

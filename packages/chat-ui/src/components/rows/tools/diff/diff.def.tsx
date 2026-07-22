@@ -135,7 +135,7 @@ function DiffUnitRender(props: { data: ChatDiff; ctx: RenderCtx; vars: DiffVars 
 
 export const diffUnitDef = defineUnit<ChatDiff, DiffVars>({
   kind: 'diff',
-  margin: { top: 2, bottom: 6 },
+  margin: { top: 2, bottom: 4 },
   vars: DIFF_VARS,
 
   estimate(item, ctx, vars): number {

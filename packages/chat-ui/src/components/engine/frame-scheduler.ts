@@ -72,7 +72,11 @@ export function createFrameScheduler(phases: FrameSchedulerPhases): FrameSchedul
       }
     } finally {
       let halted = false;
-      if (moreWrite) {
+      // Active tweens legitimately queue write work every frame (height deltas
+      // → total flush + projection), so the spin breaker only counts frames
+      // where write work repeats WITHOUT an animation driving it. Animations
+      // are time-bounded, so this cannot mask a genuine write→write loop.
+      if (moreWrite && !moreAnimate) {
         consecutiveWrites++;
         if (consecutiveWrites > MAX_CONVERGE) {
           if (import.meta.env.DEV) {

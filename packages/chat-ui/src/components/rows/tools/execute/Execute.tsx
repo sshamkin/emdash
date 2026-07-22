@@ -1,26 +1,32 @@
 /**
  * Execute — SolidJS components for ChatExecute rows.
  *
- * Renders ACP `kind: 'execute'` tool calls as a collapsible card:
+ * Renders ACP `kind: 'execute'` tool calls as a collapsible card. Folded, the
+ * card is a single header row carrying the command (or provider summary):
  *
  *   ┌─────────────────────────────────────┐
- *   │  Execute                          › │  ← header (CollapsibleCard primitive)
- *   ├─────────────────────────────────────┤
- *   │  pnpm run build --filter=...        │  ← body: mono, bash-highlighted
- *   │  ...                                │    clamped to collapsedMaxLines or
- *   └─────────────────────────────────────┘    expandedMaxLines with overflow scroll
+ *   │  $ pnpm run build --filter=...    › │  ← header (CollapsibleCard primitive)
+ *   └─────────────────────────────────────┘
  *
- * Header + card shell are provided by CollapsibleCard.
- * Body:   collapsed = clamped height + fade overlay; expanded = scrollable.
+ * Expanded, the body shows the full command and its output:
+ *
+ *   ┌─────────────────────────────────────┐
+ *   │  Execute                          ⌄ │
+ *   ├─────────────────────────────────────┤
+ *   │  pnpm run build --filter=...        │  ← body: mono, bash-highlighted,
+ *   │  ...                                │    clamped to expandedMaxLines with
+ *   └─────────────────────────────────────┘    overflow scroll
+ *
+ * Header + card shell are provided by CollapsibleCard; the body is only
+ * mounted while expanded.
  */
 
 import { useCaches } from '@components/contexts/CachesContext';
 import { cancelIdle, scheduleIdle } from '@components/engine/dom-utils';
 import { applyTokensToElement, type CodeToken } from '@core/highlight/apply-tokens';
-import { For, Show, createEffect, onCleanup } from 'solid-js';
+import { For, createEffect, onCleanup } from 'solid-js';
 import type { ChatExecute } from '@/model';
 import { executeBody, executeLine, executeOutputLine, executeSpacerLine } from './execute.css';
-import { fadeOverlayBottom } from '@styles/effects.css';
 
 // ── ExecuteBody ───────────────────────────────────────────────────────────────
 
@@ -93,20 +99,6 @@ export function ExecuteBody(props: ExecuteBodyProps) {
         'overflow-y': props.expanded && overflows() ? 'auto' : 'hidden',
       }}
     >
-      <Show when={!props.expanded && overflows()}>
-        <div
-          class={fadeOverlayBottom}
-          style={{
-            position: 'absolute',
-            inset: '0',
-            'pointer-events': 'none',
-            height: '28px',
-            bottom: '0',
-            top: 'auto',
-          }}
-          aria-hidden="true"
-        />
-      </Show>
       <For each={props.lines}>
         {(line, i) => (
           <div

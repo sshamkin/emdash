@@ -19,6 +19,7 @@ import { messageFromItem, messageUnitDef } from '@components/rows/message/messag
 import { planFromItem, planUnitDef } from '@components/rows/plan/plan.def';
 import { resourceLinkUnitDef } from '@components/rows/resource-link/resource-link.def';
 import { thinkingUnitDef } from '@components/rows/thinking/thinking.def';
+import { chipsFromItem, toolChipsUnitDef } from '@components/rows/tools/chips/chips.def';
 import {
   createFileDiffFromItem,
   diffUnitDef,
@@ -48,6 +49,7 @@ import type {
   ChatSubagentToolCall,
   ChatToolCall,
   SyntheticItem,
+  ToolChipsItem,
   ToolNode,
 } from '@/model';
 import { ROW_INSET_X } from './row-metrics';
@@ -190,6 +192,7 @@ export const SEGMENTERS: Record<string, ItemSegmenter> = {
   'create-plan-tool-call': toolNodeSegment('create-plan-tool-call'),
   'unknown-tool-call': toolNodeSegment('unknown-tool-call'),
   'tool-group': toolNodeSegment('tool-group'),
+  'tool-chips': nativePassthrough<ToolChipsItem>('tool-chips', chipsFromItem, COMPOSITE_CHROME),
   working: nativePassthrough<SyntheticItem>('working', (item) => item, COMPOSITE_CHROME),
   'turn-outcome': nativePassthrough<SyntheticItem>(
     'turn-outcome',
@@ -220,6 +223,8 @@ export const UNIT_REGISTRY: Record<string, RegistryUnitDef> = {
   'resource-link': resourceLinkUnitDef as unknown as RegistryUnitDef,
   // Hierarchical composite: parent tool call with nested children
   'tool-group': toolGroupUnitDef as unknown as RegistryUnitDef,
+  // Horizontal strip of folded tool-call chips
+  'tool-chips': toolChipsUnitDef as unknown as RegistryUnitDef,
   working: workingUnitDef as unknown as RegistryUnitDef,
   'turn-outcome': turnOutcomeUnitDef as unknown as RegistryUnitDef,
 };

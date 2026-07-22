@@ -48,6 +48,11 @@ export type CollapsibleCardProps = {
   header: JSX.Element;
   /** Optional right-aligned content beside the error icon. */
   headerRight?: JSX.Element;
+  /**
+   * When false, the card renders no body content: the header separator is
+   * suppressed so the bottom card edge is not doubled. Defaults to true.
+   */
+  bodyVisible?: boolean;
   /** Card body — rendered below the header inside the clipped shell. */
   children: JSX.Element;
 };
@@ -73,6 +78,7 @@ export function CollapsibleCard(props: CollapsibleCardProps) {
         errorTitle={props.errorTitle}
         awaitingPermission={props.awaitingPermission}
         right={props.headerRight}
+        separator={props.bodyVisible !== false}
       />
       {props.children}
     </div>

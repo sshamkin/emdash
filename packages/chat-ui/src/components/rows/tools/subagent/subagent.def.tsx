@@ -72,7 +72,7 @@ function SubagentUnitRender(props: {
 
 export const subagentUnitDef = defineUnit<ChatSubagentToolCall>({
   kind: 'subagent',
-  margin: { top: 2, bottom: 8 },
+  margin: { top: 2, bottom: 6 },
 
   estimate(_item, ctx): number {
     return subagentHeaderH(ctx);

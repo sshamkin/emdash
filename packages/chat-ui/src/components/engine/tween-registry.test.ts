@@ -72,6 +72,74 @@ describe('createTweenRegistry — first registration', () => {
   });
 });
 
+describe('createTweenRegistry — handle identity', () => {
+  it('returns a stable handle per entry and a fresh handle after re-registration', () => {
+    const virt = makeVirt();
+    const onHeightChanged = vi.fn();
+
+    createRoot((dispose) => {
+      const reg = createTweenRegistry(virt, onHeightChanged, { reducedMotion: () => false });
+      const h1 = reg.set('item', () => 0, 100, false);
+      const h2 = reg.set('item', () => 0, 100, false);
+      // Same entry → same handle object, so a signal holding it dedupes.
+      expect(h2).toBe(h1);
+
+      reg.unregister('item');
+      const h3 = reg.set('item', () => 0, 100, false);
+      // New entry (new signals) → new handle, so subscribers re-subscribe.
+      expect(h3).not.toBe(h1);
+      dispose();
+    });
+  });
+});
+
+describe('createTweenRegistry — ownership and reseed sync', () => {
+  it('unregister with a stale owner is a no-op after another row rebinds', () => {
+    const virt = makeVirt();
+    const onHeightChanged = vi.fn();
+
+    createRoot((dispose) => {
+      const reg = createTweenRegistry(virt, onHeightChanged, { reducedMotion: () => false });
+      const rowA = Symbol('a');
+      const rowB = Symbol('b');
+
+      reg.set('item', () => 0, 100, false, rowA);
+      // Row B (the item's new host after recycling) rebinds the entry.
+      reg.set('item', () => 3, 100, false, rowB);
+
+      // Row A unmounts — must not delete row B's entry.
+      reg.unregister('item', rowA);
+      const handle = reg.set('item', () => 3, 100, false, rowB);
+      expect(handle.height()).toBe(100);
+
+      // The owner can delete it.
+      reg.unregister('item', rowB);
+      dispose();
+    });
+  });
+
+  it('target-unchanged set() re-syncs the virtualizer after an external reseed', () => {
+    const virt = makeVirt();
+    const onHeightChanged = vi.fn();
+
+    createRoot((dispose) => {
+      const reg = createTweenRegistry(virt, onHeightChanged, { reducedMotion: () => false });
+      reg.set('item', () => 0, 100, false);
+      expect(virt.setSize(0, 100)).toBe(0); // virt reflects the entry
+
+      // Structural rebuild reseeds the row with an estimate behind the
+      // registry's back.
+      virt.setSize(0, 34);
+
+      // Same target as existing.to — must still push the height into virt.
+      reg.set('item', () => 0, 100, false);
+      expect(virt.setSize(0, 100)).toBe(0);
+
+      dispose();
+    });
+  });
+});
+
 describe('createTweenRegistry — target change with shouldAnim=true', () => {
   it('sets animating=true and advance() interpolates toward target', () => {
     const virt = makeVirt();

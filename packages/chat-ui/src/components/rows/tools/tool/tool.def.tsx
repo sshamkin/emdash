@@ -19,7 +19,7 @@ export function toolFromItem(item: ToolNode, ctx: SegmentCtx): ChatToolCall {
           : item.kind === 'spawn-subagent-tool-call'
             ? 'Subagent'
             : item.kind === 'unknown-tool-call'
-              ? item.name
+              ? item.name || 'Tool'
               : item.kind === 'tool-group'
                 ? item.label
                 : 'Tool';
@@ -32,9 +32,7 @@ export function toolFromItem(item: ToolNode, ctx: SegmentCtx): ChatToolCall {
           ? (item.pageTitle ?? item.url)
           : item.kind === 'spawn-subagent-tool-call'
             ? `${item.name}${item.background ? ' (background)' : ''}`
-            : item.kind === 'unknown-tool-call'
-              ? (item.toolKind ?? undefined)
-              : base?.inputSummary;
+            : base?.inputSummary;
   return {
     kind: 'tool',
     id: item.id,

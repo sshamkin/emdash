@@ -197,23 +197,56 @@ export function UnitRow(props: UnitRowProps) {
   // Tween handle: reactive height/animating/clipHeight accessors.
   // Uses the central registry when available; falls back to a local rAF tween
   // for isolated stories and tests that don't wire up a ChatRoot.
-  let tweenHandle: TweenHandle;
+  //
+  // Held in a SIGNAL: when row recycling replaces the handle (the old item's
+  // entry is unregistered and a new entry registered), every subscriber —
+  // e.g. the clip-release effect below — re-runs and re-subscribes to the new
+  // handle's signals. A plain mutable local would leave them subscribed to
+  // the disposed entry forever (stuck clipped, or never clipping again).
+  // Registry handles have stable per-entry identity, so signal equality
+  // suppresses updates while the entry is unchanged.
+  let tweenHandle: () => TweenHandle;
 
   if (props.tweenRegistry) {
     const reg = props.tweenRegistry;
     const getIndex = () => props.index;
-    const itemId = props.unit.itemId;
+    // Rows are keyed by visible INDEX, so a structural re-flatten can recycle
+    // this component onto a different item. The registration must follow the
+    // item identity — otherwise this row would keep feeding the old item's
+    // tween entry with the new item's geometry (arming zombie tweens that are
+    // then abandoned mid-flight).
+    let registeredId = props.unit.itemId;
+    // Unique per-row identity: entries rebind to their latest set() caller, so
+    // a stale row unmounting cannot unregister a surviving row's entry.
+    const owner = Symbol('unit-row');
 
     // Register the initial target; the effect below will call set() on changes.
-    tweenHandle = reg.set(itemId, getIndex, untrack(logicalReserved), false);
+    const [handle, setHandle] = createSignal<TweenHandle>(
+      reg.set(registeredId, getIndex, untrack(logicalReserved), false, owner)
+    );
+    tweenHandle = handle;
 
     createEffect(() => {
+      const id = props.unit.itemId;
       const target = logicalReserved();
+      if (id !== registeredId) {
+        // Recycled onto a different item: release the previous registration
+        // first — its entry holds a live getIndex closure into THIS row's
+        // index and would keep writing stale geometry if left animating.
+        // Ownership makes this safe: if another row already rebound the old
+        // item, the unregister is a no-op. Then re-register and snap — an
+        // identity change is layout restructuring, not an animatable toggle.
+        reg.unregister(registeredId, owner);
+        registeredId = id;
+        lastExpandSig = untrack(rowExpanded);
+        setHandle(reg.set(id, getIndex, target, false, owner));
+        return;
+      }
       const anim = untrack(shouldAnimate);
-      tweenHandle = reg.set(itemId, getIndex, target, anim);
+      setHandle(reg.set(id, getIndex, target, anim, owner));
     });
 
-    onCleanup(() => reg.unregister(itemId));
+    onCleanup(() => reg.unregister(registeredId, owner));
   } else {
     // Legacy path: per-row rAF tween (for stories / tests without ChatRoot).
     const localTween = createHeightTween(logicalReserved, { shouldAnimate });
@@ -224,16 +257,17 @@ export function UnitRow(props: UnitRowProps) {
       if (delta !== 0) props.onHeightChanged(props.index, delta);
     });
 
-    tweenHandle = {
+    const staticHandle: TweenHandle = {
       height: localTween.height,
       animating: localTween.animating,
       clipHeight: (gapBefore: number) =>
         localTween.animating() ? localTween.height() - gapBefore : null,
     };
+    tweenHandle = () => staticHandle;
   }
 
-  const animatedReserved = () => tweenHandle.height();
-  const animating = () => tweenHandle.animating();
+  const animatedReserved = () => tweenHandle().height();
+  const animating = () => tweenHandle().animating();
 
   // ── Deferred clip release ─────────────────────────────────────────────────
   // When the tween finishes, hold overflow:hidden + the settled height for one
@@ -303,7 +337,7 @@ export function UnitRow(props: UnitRowProps) {
   const renderCtx: RenderCtx = {
     viewState: displayViewState,
     measureCtx: displayMeasureCtx,
-    clipHeight: () => tweenHandle.clipHeight(props.unit.gapBefore),
+    clipHeight: () => tweenHandle().clipHeight(props.unit.gapBefore),
   };
 
   return (

@@ -163,7 +163,7 @@ function PlanUnitRender(props: { data: ChatPlan; ctx: RenderCtx; vars: PlanVars 
 
 export const planUnitDef = defineUnit<ChatPlan, PlanVars>({
   kind: 'plan',
-  margin: { top: 8, bottom: 8 },
+  margin: { top: 6, bottom: 6 },
   vars: {
     rowH: ROW_H,
     border: 1,

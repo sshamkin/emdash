@@ -6,6 +6,7 @@ import {
   cardErrorIcon,
   cardHeader,
   cardHeaderLeft,
+  cardHeaderNoSeparator,
   cardHeaderRight,
   cardHeaderTitle,
   cardHoverChevron,
@@ -39,12 +40,19 @@ export type CardHeaderProps = {
   awaitingPermission?: boolean;
   /** Optional right-aligned content beside the status icon. */
   right?: JSX.Element;
+  /**
+   * When false, the header bottom border (body separator) is suppressed —
+   * use for header-only cards whose measured height reserves no separator.
+   * Defaults to true.
+   */
+  separator?: boolean;
 };
 
 export function CardHeader(props: CardHeaderProps) {
   return (
     <div
       class={cardHeader}
+      classList={{ [cardHeaderNoSeparator]: props.separator === false }}
       style={{ height: `${props.height}px` }}
       role="button"
       aria-expanded={props.expanded ? 'true' : 'false'}

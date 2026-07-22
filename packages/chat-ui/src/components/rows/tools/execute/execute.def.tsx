@@ -22,8 +22,6 @@ export type ExecuteVars = {
   scrollbarSize: number;
   /** Visual separation between command text and the horizontal scrollbar. */
   scrollbarGap: number;
-  /** Max lines shown in the collapsed (preview) state. */
-  collapsedMaxLines: number;
   /** Max lines shown / scrollable in the expanded state. */
   expandedMaxLines: number;
 };
@@ -34,7 +32,6 @@ const EXECUTE_VARS: ExecuteVars = {
   linePadX: 12,
   scrollbarSize: 8,
   scrollbarGap: 3,
-  collapsedMaxLines: 2,
   expandedMaxLines: 16,
 };
 
@@ -43,8 +40,25 @@ function chromeY(vars: ExecuteVars): number {
   return 3 * vars.border;
 }
 
+/** Folded card: a single header row framed by the top and bottom card edges. */
+function foldedH(vars: ExecuteVars): number {
+  return vars.rowH + 2 * vars.border;
+}
+
 function commandLines(command: string): string[] {
   return (command || '…').split('\n');
+}
+
+/**
+ * Folded cards surface the command itself (or the provider's summary) in the
+ * header so the one-line state stays informative; expanded cards fall back to
+ * the generic label because the body shows the full command.
+ */
+function headerLabel(item: ChatExecute, expanded: boolean): string {
+  if (item.inputSummary) return item.inputSummary;
+  if (expanded) return 'Execute';
+  const [first, ...rest] = commandLines(item.command);
+  return rest.length > 0 ? `$ ${first} …` : `$ ${first}`;
 }
 
 function outputLines(outputText: string | undefined): string[] {
@@ -68,12 +82,10 @@ function executeLines(item: ChatExecute): ExecuteDisplayLine[] {
 function executeBodyH(
   lines: ExecuteDisplayLine[],
   codeLineH: number,
-  isExpanded: boolean,
   vars: ExecuteVars
 ): { bodyH: number; contentH: number } {
   const contentH = lines.length * codeLineH;
-  const maxLines = isExpanded ? vars.expandedMaxLines : vars.collapsedMaxLines;
-  const cap = maxLines * codeLineH;
+  const cap = vars.expandedMaxLines * codeLineH;
   const bodyH = Math.min(contentH, cap);
   return { bodyH, contentH };
 }
@@ -111,15 +123,10 @@ function scrollbarSpace(
 }
 
 function executeUnitH(item: ChatExecute, ctx: MeasureCtx, vars: ExecuteVars): number {
-  const isExpanded = ctx.expanded(item.id);
+  if (!ctx.expanded(item.id)) return foldedH(vars);
   const lines = executeLines(item);
-  const { bodyH, contentH } = executeBodyH(
-    lines,
-    ctx.theme.fonts.code.lineHeight,
-    isExpanded,
-    vars
-  );
-  const hasVerticalOverflow = isExpanded && contentH > bodyH;
+  const { bodyH, contentH } = executeBodyH(lines, ctx.theme.fonts.code.lineHeight, vars);
+  const hasVerticalOverflow = contentH > bodyH;
   return vars.rowH + bodyH + scrollbarSpace(lines, ctx, vars, hasVerticalOverflow) + chromeY(vars);
 }
 
@@ -132,20 +139,21 @@ function ExecuteUnitRender(props: { data: ChatExecute; ctx: RenderCtx; vars: Exe
   const codeLineH = createMemo(() => mCtx()?.theme.fonts.code.lineHeight ?? 0);
   const bodyGeometry = createMemo(() => {
     const lineH = codeLineH();
-    if (!lineH) return { bodyH: 0, contentH: 0 };
-    return executeBodyH(lines(), lineH, isExpanded(), props.vars);
+    if (!lineH || !isExpanded()) return { bodyH: 0, contentH: 0 };
+    return executeBodyH(lines(), lineH, props.vars);
   });
   const showScrollbar = createMemo(() => {
     const ctx = mCtx();
+    if (!ctx || !isExpanded()) return false;
     const geometry = bodyGeometry();
-    const hasVerticalOverflow = isExpanded() && geometry.contentH > geometry.bodyH;
+    const hasVerticalOverflow = geometry.contentH > geometry.bodyH;
     const verticalScrollbarW = hasVerticalOverflow ? props.vars.scrollbarSize : 0;
-    return ctx ? hasHorizontalOverflow(lines(), ctx, props.vars, verticalScrollbarW) : false;
+    return hasHorizontalOverflow(lines(), ctx, props.vars, verticalScrollbarW);
   });
 
   const totalH = createMemo(() => {
     const ctx = mCtx();
-    if (!ctx) return props.vars.rowH + chromeY(props.vars);
+    if (!ctx) return foldedH(props.vars);
     return executeUnitH(props.data, ctx, props.vars);
   });
 
@@ -161,9 +169,10 @@ function ExecuteUnitRender(props: { data: ChatExecute; ctx: RenderCtx; vars: Exe
       errorTitle={props.data.error}
       awaitingPermission={props.data.awaitingPermission}
       icon={<IconTerminal />}
-      header={props.data.inputSummary || 'Execute'}
+      header={headerLabel(props.data, isExpanded())}
+      bodyVisible={isExpanded()}
     >
-      <Show when={codeLineH() > 0}>
+      <Show when={isExpanded() && codeLineH() > 0}>
         <ExecuteBody
           item={props.data}
           lines={lines()}
@@ -182,15 +191,15 @@ function ExecuteUnitRender(props: { data: ChatExecute; ctx: RenderCtx; vars: Exe
 
 export const executeUnitDef = defineUnit<ChatExecute, ExecuteVars>({
   kind: 'execute',
-  margin: { top: 2, bottom: 6 },
+  margin: { top: 2, bottom: 4 },
   vars: EXECUTE_VARS,
 
   estimate(item, ctx, vars): number {
-    // Use the collapsed line cap and current width for stable initial geometry.
+    if (!ctx.expanded(item.id)) return foldedH(vars);
     const lines = executeLines(item);
     // Approximate code line height — use a fixed fallback of 20px for estimate.
     const approxLineH = 20;
-    const { bodyH } = executeBodyH(lines, approxLineH, false, vars);
+    const { bodyH } = executeBodyH(lines, approxLineH, vars);
     return vars.rowH + bodyH + scrollbarSpace(lines, ctx, vars, false) + chromeY(vars);
   },
 

@@ -153,7 +153,7 @@ function ThinkingUnitRender(props: { data: ChatThinking; ctx: RenderCtx; vars: T
 
 export const thinkingUnitDef = defineUnit<ChatThinking, ThinkingVars>({
   kind: 'thinking',
-  margin: { top: 6, bottom: 6 },
+  margin: { top: 4, bottom: 4 },
   vars: THINKING_VARS,
 
   estimate(item, ctx, vars): number {
