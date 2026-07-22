@@ -5,7 +5,7 @@ const isDev = env?.DEV === true;
 const isCanary = env?.VITE_BUILD === 'canary';
 
 export const APP_ID = isCanary ? 'com.emdash.canary' : 'com.emdash.stable';
-export const PRODUCT_NAME = isCanary ? 'Emdash Canary' : 'Emdash';
+export const PRODUCT_NAME = isDev ? 'Emdash Dev' : isCanary ? 'Emdash Canary' : 'Emdash';
 export const APP_NAME_LOWER = isCanary ? 'emdash-canary' : 'emdash';
 export const USER_DATA_DIR_NAME = isDev ? 'emdash-dev' : isCanary ? 'emdash-canary' : 'emdash';
 export const UPDATE_CHANNEL = isCanary ? 'v1-canary' : 'v1-stable';
